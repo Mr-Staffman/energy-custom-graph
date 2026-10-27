@@ -276,6 +276,7 @@ export interface EnergyCustomGraphCardConfig extends LovelaceCardConfig {
   show_tooltip?: boolean;
   show_x_axis_pointer?: boolean;
   show_now_marker?: boolean;
+  align_zero?: boolean;
   show_y_axis_pointer?: boolean;
   tooltip_precision?: number;
   show_unit?: boolean;
