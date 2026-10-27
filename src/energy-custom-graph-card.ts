@@ -3380,8 +3380,11 @@ export class EnergyCustomGraphCard extends LitElement {
       const values = buildAttributeForecastStatistics(points, rangeStart, rangeEnd, bucketing);
       const key = this._getForecastKey(index);
       data.set(key, values);
-      const unit = this.hass?.states[entityId]?.attributes?.unit_of_measurement;
-      units.set(key, typeof unit === "string" ? unit : null);
+      const unit =
+        series.unit !== undefined
+          ? series.unit
+          : this.hass?.states[entityId]?.attributes?.unit_of_measurement;
+      units.set(key, typeof unit === "string" && unit.length ? unit : null);
     });
 
     const commitForecastData = () => {
@@ -4688,6 +4691,22 @@ export class EnergyCustomGraphCard extends LitElement {
       barStackZByBase.set(baseKey, resolvedBaseZ);
       ensurePlaceholder(baseKey, resolvedBaseZ);
     });
+
+    // Plain lines (no area fill) are drawn above bars so they stay visible
+    // when bars and lines share a chart, e.g. a price with a schedule line.
+    if (mainSeries.some((serie) => serie.type === "bar")) {
+      mainSeries.forEach((serie) => {
+        if (serie.type !== "line") {
+          return;
+        }
+        const line = serie as SeriesOption & { areaStyle?: unknown };
+        if (line.areaStyle) {
+          return;
+        }
+        const z = typeof line.z === "number" && Number.isFinite(line.z) ? line.z : 0;
+        line.z = z + BAR_Z_BASE * 2;
+      });
+    }
 
     let compareSeries: SeriesOption[] = [];
     const hasCompareData =

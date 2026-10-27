@@ -304,6 +304,7 @@ Metric sources and calculation terms support `multiply`, `add`, `clip_min`, and 
 | `end_key` | string | auto | (Attribute list only) Key of the end time. Defaults to `end` if present, otherwise the next entry's start. |
 | `value_key` | string | auto | (Attribute list only) Key of the value. Defaults to the first of `value`, `price`, `total`. |
 | `subtract_key` | string | – | (Attribute list only) Key whose value is subtracted from `value_key`, e.g. `charged` minus `discharged`. |
+| `unit` | string | entity unit | (Attribute list only) Unit shown in tooltips, e.g. after scaling with `multiply`. Defaults to the entity's `unit_of_measurement`. |
 
 #### Color thresholds
 
@@ -461,7 +462,7 @@ series:
 - The chart updates whenever the entity changes.
 - Each entry needs a parseable time (ISO string or epoch seconds/milliseconds) and a numeric value (numbers or numeric strings, decimal comma allowed). Other entries are skipped.
 - With the `raw` aggregation interval every entry is one point. With `5minute`, `hour`, `day`, … entries are grouped per interval: `mean` (default) is time-weighted, `sum` / `change` add up the entries, `min` / `max` are the extremes and `state` is the last entry.
-- The unit is taken from the entity's `unit_of_measurement`; set `y_axes[].unit` to override it.
+- The unit is taken from the entity's `unit_of_measurement`; set the series `unit` or `y_axes[].unit` to override it.
 - `multiply`, `add`, `clip_min`, `clip_max`, `color_thresholds` and all display options work as for other series. `time_offset` and the compare feature are not supported.
 
 #### Solar forecast series

@@ -126,6 +126,8 @@ export interface EnergyCustomGraphSeriesConfig {
   value_key?: string;
   /** (attribute_forecast) Optional key whose value is subtracted from value_key. */
   subtract_key?: string;
+  /** (attribute_forecast) Unit override; defaults to the entity's unit_of_measurement. */
+  unit?: string | null;
 }
 
 export interface EnergyCustomGraphHeaderSeriesMetricConfig
