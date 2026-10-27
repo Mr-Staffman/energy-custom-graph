@@ -236,6 +236,8 @@ export class EnergyCustomGraphCard extends LitElement {
   @state() private _isLoading = false;
   @state() private _chartData: SeriesOption[] = [];
   @state() private _chartOptions?: ECOption;
+  // Legend visibility toggled by the user (legend id -> visible).
+  private _legendVisibility = new Map<string, boolean>();
   @state() private _headerChip?: HeaderChipRender;
   @state() private _disabledMessage?: string;
   @state() private _usesSectionLayout = false;
@@ -4528,9 +4530,40 @@ export class EnergyCustomGraphCard extends LitElement {
           .options=${this._chartOptions}
           .height=${chartHeight}
           .expandLegend=${this._config?.expand_legend}
+          @dataset-hidden=${(ev: CustomEvent<{ id: string }>) =>
+            this._handleLegendToggle(ev.detail?.id, false)}
+          @dataset-unhidden=${(ev: CustomEvent<{ id: string }>) =>
+            this._handleLegendToggle(ev.detail?.id, true)}
         ></ha-chart-base>
       </div>
     `;
+  }
+
+  private _handleLegendToggle(id: string | undefined, visible: boolean): void {
+    if (!id) {
+      return;
+    }
+    this._legendVisibility.set(id, visible);
+    // Axes with data-derived fixed ranges must be recomputed for the visible series.
+    const axes = this._config?.y_axes ?? [];
+    if (this._config?.align_zero || axes.some((axis) => axis.center_zero)) {
+      this._generateChart();
+    }
+  }
+
+  private _isSeriesVisible(
+    seriesId: string | undefined,
+    config: EnergyCustomGraphSeriesConfig | undefined
+  ): boolean {
+    if (!seriesId) {
+      return true;
+    }
+    for (const [legendId, visible] of this._legendVisibility) {
+      if (seriesId === legendId || seriesId.startsWith(`${legendId}__`)) {
+        return visible;
+      }
+    }
+    return config?.hidden_by_default !== true;
   }
 
   private _generateChart(): void {
@@ -6435,7 +6468,7 @@ export class EnergyCustomGraphCard extends LitElement {
 
     const selected: Record<string, boolean> = {};
     sortedEntries.forEach((entry) => {
-      const isVisible = entry.hidden ? false : true;
+      const isVisible = this._legendVisibility.get(entry.id) ?? (entry.hidden ? false : true);
       selected[entry.id] = isVisible;
       const linked = groupedSecondaryIds.get(entry.id);
       linked?.forEach((secondaryId) => {
@@ -6468,7 +6501,9 @@ export class EnergyCustomGraphCard extends LitElement {
 
     const getDataRange = (axisIndex: number): { min: number; max: number } | undefined => {
       const relevantSeries = series.filter(
-        (s) => (s.yAxisIndex ?? 0) === axisIndex
+        (s) =>
+          (s.yAxisIndex ?? 0) === axisIndex &&
+          this._isSeriesVisible(s.id as string | undefined, seriesById.get(String(s.id ?? "")))
       );
 
       if (!relevantSeries.length) {
@@ -6691,10 +6726,41 @@ export class EnergyCustomGraphCard extends LitElement {
     if (valid.length < 2) {
       return;
     }
-    // Share of the axis height below zero; the largest one wins.
-    const share = Math.max(
-      ...valid.map(({ negative, positive }) => negative / (negative + positive))
-    );
+    // Common share of the axis height below zero. Any share in (0, 1) keeps
+    // all data visible; pick the one that wastes the least height, so an
+    // all-negative axis does not squash an all-positive one.
+    const MAX_NEGATIVE_SHARE = 1 / 3;
+    const anyPositive = valid.some(({ positive }) => positive > 0);
+    let share = 0;
+    let bestScore = -Infinity;
+    for (let step = 0; step <= 100; step++) {
+      const candidate = step / 100;
+      // Keep the area below zero to at most a third when any axis has
+      // positive data; negative values are usually the secondary story.
+      if (anyPositive && candidate > MAX_NEGATIVE_SHARE) {
+        break;
+      }
+      const fits = valid.every(
+        ({ negative, positive }) =>
+          (negative === 0 || candidate > 0) && (positive === 0 || candidate < 1)
+      );
+      if (!fits) {
+        continue;
+      }
+      const score = Math.min(
+        ...valid.map(({ negative, positive }) => {
+          const total = Math.max(
+            candidate > 0 ? negative / candidate : 0,
+            candidate < 1 ? positive / (1 - candidate) : 0
+          );
+          return total > 0 ? (negative + positive) / total : 1;
+        })
+      );
+      if (score > bestScore + 1e-9) {
+        bestScore = score;
+        share = candidate;
+      }
+    }
 
     extents.forEach((extent, index) => {
       if (!extent) {
