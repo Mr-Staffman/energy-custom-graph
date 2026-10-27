@@ -56,7 +56,11 @@ export interface EnergyCustomGraphCalculationConfig {
   unit?: string | null;
 }
 
-export type EnergyCustomGraphSeriesSource = "statistic" | "calculation" | "forecast";
+export type EnergyCustomGraphSeriesSource =
+  | "statistic"
+  | "calculation"
+  | "forecast"
+  | "attribute_forecast";
 
 export type EnergyCustomGraphTimeOffsetUnit =
   | "hour"
@@ -110,6 +114,18 @@ export interface EnergyCustomGraphSeriesConfig {
   clip_max?: number;
   time_offset?: EnergyCustomGraphTimeOffsetConfig;
   pv_production_entity?: string;
+  /** (attribute_forecast) Entity that holds the list attribute(s). */
+  entity?: string;
+  /** (attribute_forecast) One or more list attributes, merged by time. */
+  attributes?: string | string[];
+  /** (attribute_forecast) Key of the start time in each list entry. */
+  time_key?: string;
+  /** (attribute_forecast) Optional key of the end time in each list entry. */
+  end_key?: string;
+  /** (attribute_forecast) Key of the value in each list entry. */
+  value_key?: string;
+  /** (attribute_forecast) Optional key whose value is subtracted from value_key. */
+  subtract_key?: string;
 }
 
 export interface EnergyCustomGraphHeaderSeriesMetricConfig
@@ -257,6 +273,7 @@ export interface EnergyCustomGraphCardConfig extends LovelaceCardConfig {
   y_axes?: EnergyCustomGraphAxisConfig[];
   show_tooltip?: boolean;
   show_x_axis_pointer?: boolean;
+  show_now_marker?: boolean;
   show_y_axis_pointer?: boolean;
   tooltip_precision?: number;
   show_unit?: boolean;

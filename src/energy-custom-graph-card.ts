@@ -41,6 +41,11 @@ import {
   fetchRawHistoryStates,
   historyStatesToStatistics,
 } from "./data/history";
+import {
+  buildAttributeForecastStatistics,
+  extractAttributeForecastPoints,
+  normalizeAttributeForecastAttributes,
+} from "./data/attribute-forecast";
 import type { FetchRawHistoryOptions, HistoryStreamMessage } from "./data/history";
 import type { HistoryStates } from "./data/history";
 import {
@@ -101,6 +106,8 @@ import type {
   BarSeriesOption,
   XAxisOption,
 } from "./types/echarts";
+
+const NOW_MARKER_ID = "__now_marker";
 
 interface EnergyData {
   start: Date;
@@ -423,6 +430,11 @@ export class EnergyCustomGraphCard extends LitElement {
         return true;
       }
 
+      // Re-render when an attribute forecast entity changed
+      if (this._attributeForecastEntitiesChanged(oldHass, this.hass)) {
+        return true;
+      }
+
       // Ignore hass.states updates (sensor value changes)
       return false;
     }
@@ -506,7 +518,7 @@ export class EnergyCustomGraphCard extends LitElement {
 
   private _getSeriesSource(
     series: EnergyCustomGraphSeriesConfig
-  ): "statistic" | "calculation" | "forecast" {
+  ): "statistic" | "calculation" | "forecast" | "attribute_forecast" {
     if (series.source) {
       return series.source;
     }
@@ -632,7 +644,36 @@ export class EnergyCustomGraphCard extends LitElement {
     if (!series) {
       return false;
     }
-    return this._getSeriesSource(series) === "forecast";
+    const source = this._getSeriesSource(series);
+    return source === "forecast" || source === "attribute_forecast";
+  }
+
+  private _seriesUsesAttributeForecast(series?: EnergyCustomGraphSeriesConfig): boolean {
+    return Boolean(series && this._getSeriesSource(series) === "attribute_forecast");
+  }
+
+  private _getAttributeForecastEntityIds(
+    config: EnergyCustomGraphCardConfig | undefined = this._config
+  ): string[] {
+    const ids = new Set<string>();
+    config?.series?.forEach((series) => {
+      if (this._seriesUsesAttributeForecast(series) && series.entity?.trim()) {
+        ids.add(series.entity.trim());
+      }
+    });
+    return Array.from(ids);
+  }
+
+  private _attributeForecastEntitiesChanged(
+    oldHass: HomeAssistant | undefined,
+    newHass: HomeAssistant | undefined
+  ): boolean {
+    if (!oldHass || !newHass) {
+      return false;
+    }
+    return this._getAttributeForecastEntityIds().some(
+      (id) => oldHass.states[id] !== newHass.states[id]
+    );
   }
 
   private _hasForecastSeries(config: EnergyCustomGraphCardConfig | undefined = this._config): boolean {
@@ -3292,42 +3333,90 @@ export class EnergyCustomGraphCard extends LitElement {
       return;
     }
 
-    const forecastSeries = this._config.series
+    const allForecastSeries = this._config.series
       .map((series, index) => ({ series, index }))
       .filter(({ series }) => this._seriesUsesForecast(series));
 
-    if (!forecastSeries.length) {
+    if (!allForecastSeries.length) {
       this._clearForecastData();
       return;
     }
 
     const aggregation = this._statisticsPeriod;
+    const rangeStart = this._statisticsRange?.start ?? this._periodStart.getTime();
+    const rangeEnd = this._periodEnd?.getTime() ?? this._statisticsRange?.end ?? null;
+
+    const data = new Map<string, StatisticValue[]>();
+    const units = new Map<string, string | null | undefined>();
+
+    const attributeSeries = allForecastSeries.filter(({ series }) =>
+      this._seriesUsesAttributeForecast(series)
+    );
+    const forecastSeries = allForecastSeries.filter(
+      ({ series }) => !this._seriesUsesAttributeForecast(series)
+    );
+
+    const bucketing =
+      aggregation && aggregation !== "raw" && aggregation !== "disabled"
+        ? {
+            align: (ts: number) => this._alignForecastBucketStart(ts, aggregation),
+            advance: (ts: number) => this._advanceBucket(new Date(ts), aggregation).getTime(),
+          }
+        : undefined;
+    attributeSeries.forEach(({ series, index }) => {
+      const entityId = series.entity?.trim();
+      const attributes = normalizeAttributeForecastAttributes(series.attributes);
+      if (!entityId || !attributes.length) {
+        this._log("warn", "attribute_forecast series needs entity and attributes", { index });
+        return;
+      }
+      const points = extractAttributeForecastPoints(this.hass?.states[entityId], {
+        attributes,
+        time_key: series.time_key?.trim() || undefined,
+        end_key: series.end_key?.trim() || undefined,
+        value_key: series.value_key?.trim() || undefined,
+        subtract_key: series.subtract_key?.trim() || undefined,
+      });
+      const values = buildAttributeForecastStatistics(points, rangeStart, rangeEnd, bucketing);
+      const key = this._getForecastKey(index);
+      data.set(key, values);
+      const unit = this.hass?.states[entityId]?.attributes?.unit_of_measurement;
+      units.set(key, typeof unit === "string" ? unit : null);
+    });
+
+    const commitForecastData = () => {
+      this._forecastSeriesData = data;
+      this._forecastSeriesUnits = units;
+      this._forecastSeriesDataCompare = new Map();
+      this._forecastSeriesUnitsCompare = new Map();
+    };
+
+    if (!forecastSeries.length) {
+      commitForecastData();
+      return;
+    }
+
     if (aggregation === "year") {
       this._clearForecastData();
       if (!this._warnedForecastYearAggregation) {
         this._log("warn", "Forecast series are not shown for yearly aggregation", {});
         this._warnedForecastYearAggregation = true;
       }
+      commitForecastData();
       return;
     }
 
     await this._ensureEnergyPreferences();
     if (!this._solarSourcesByStatistic.size) {
-      this._clearForecastData();
+      commitForecastData();
       return;
     }
 
     await this._ensureSolarForecasts();
     if (!this._solarForecasts) {
-      this._clearForecastData();
+      commitForecastData();
       return;
     }
-
-    const rangeStart = this._statisticsRange?.start ?? this._periodStart.getTime();
-    const rangeEnd = this._periodEnd?.getTime() ?? this._statisticsRange?.end ?? null;
-
-    const data = new Map<string, StatisticValue[]>();
-    const units = new Map<string, string | null | undefined>();
 
     forecastSeries.forEach(({ series, index }) => {
       const ids = this._resolveForecastIds(series);
@@ -3343,10 +3432,7 @@ export class EnergyCustomGraphCard extends LitElement {
       units.set(key, "kWh");
     });
 
-    this._forecastSeriesData = data;
-    this._forecastSeriesUnits = units;
-    this._forecastSeriesDataCompare = new Map();
-    this._forecastSeriesUnitsCompare = new Map();
+    commitForecastData();
   }
 
   private _hasActiveRawStream(target: "main" | "compare"): boolean {
@@ -4189,6 +4275,9 @@ export class EnergyCustomGraphCard extends LitElement {
         );
         return;
       }
+      if (series.source === "forecast" || series.source === "attribute_forecast") {
+        return;
+      }
       const hasStatistic = typeof series.statistic_id === "string" && series.statistic_id.trim() !== "";
       const hasCalculation = !!series.calculation;
       if (hasStatistic && hasCalculation) {
@@ -4265,6 +4354,16 @@ export class EnergyCustomGraphCard extends LitElement {
       (changedProps.has("hass") && this._headerMetricUsesEntityState())
     ) {
       this._generateChart();
+    }
+
+    if (
+      changedProps.has("hass") &&
+      this._attributeForecastEntitiesChanged(
+        changedProps.get("hass") as HomeAssistant | undefined,
+        this.hass
+      )
+    ) {
+      void this._refreshForecastData();
     }
 
     const oldConfig = changedProps.get("_config") as EnergyCustomGraphCardConfig | undefined;
@@ -4781,6 +4880,7 @@ export class EnergyCustomGraphCard extends LitElement {
       computedStyle.getPropertyValue("--primary-text-color").trim() || "#000";
     this._applyBarStyling(combinedSeries, bucketSequence, valueLabelColor);
 
+
     if (!combinedSeries.length) {
       this._chartData = [];
       this._chartOptions = undefined;
@@ -4953,6 +5053,8 @@ export class EnergyCustomGraphCard extends LitElement {
       (!hasExistingChartData && (extendMainToNow || extendCompareToNow));
 
     // Control animation explicitly: only animate when we decided to animate from zero
+    this._appendNowMarker(options, combinedSeries, currentStart, displayEnd, computedStyle);
+
     options.animation = shouldAnimateFromZero;
     this._chartOptions = options;
 
@@ -6972,12 +7074,64 @@ export class EnergyCustomGraphCard extends LitElement {
     this._log("warn", message, details);
   }
 
+  /**
+   * Draws a dashed vertical "now" line. HA's bundled ECharts has no markLine
+   * component, so the line is a two-point series on a hidden 0..1 y axis.
+   */
+  private _appendNowMarker(
+    options: ECOption,
+    series: SeriesOption[],
+    rangeStart: number,
+    rangeEnd: number | null,
+    computedStyle: CSSStyleDeclaration
+  ): void {
+    if (!this._config?.show_now_marker || !series.length) {
+      return;
+    }
+    const now = Date.now();
+    if (now < rangeStart || (rangeEnd !== null && now > rangeEnd)) {
+      return;
+    }
+    const yAxes = Array.isArray(options.yAxis)
+      ? options.yAxis
+      : options.yAxis
+        ? [options.yAxis]
+        : [];
+    yAxes.push({ id: NOW_MARKER_ID, type: "value", min: 0, max: 1, show: false } as YAxisOption);
+    options.yAxis = yAxes;
+    const color =
+      computedStyle.getPropertyValue("--primary-color").trim() ||
+      computedStyle.getPropertyValue("--primary-text-color").trim() ||
+      "#03a9f4";
+    series.push({
+      id: NOW_MARKER_ID,
+      name: NOW_MARKER_ID,
+      type: "line",
+      yAxisIndex: yAxes.length - 1,
+      data: [
+        [now, 0],
+        [now, 1],
+      ],
+      symbol: "none",
+      silent: true,
+      animation: false,
+      z: 1,
+      tooltip: { show: false },
+      lineStyle: { color, type: "dashed", width: 1, opacity: 0.9 },
+    } as SeriesOption);
+  }
+
   private _renderTooltip(params: unknown): HTMLElement | null {
     if (!Array.isArray(params) || !params.length) {
       return null;
     }
 
-    const items = params as Array<Record<string, any>>;
+    const items = (params as Array<Record<string, any>>).filter(
+      (item) => item?.seriesId !== NOW_MARKER_ID
+    );
+    if (!items.length) {
+      return null;
+    }
     const precision = this._config?.tooltip_precision ?? 2;
     const includeStackSums = this._config?.show_stack_sums === true;
 
