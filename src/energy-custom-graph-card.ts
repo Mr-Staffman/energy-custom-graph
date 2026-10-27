@@ -6529,7 +6529,75 @@ export class EnergyCustomGraphCard extends LitElement {
       yAxis.push(createAxis(rightConfig, 1));
     }
 
+    if (this._config?.align_zero && yAxis.length > 1) {
+      this._alignAxisZero(yAxis, [leftConfig, rightConfig], getDataRange, roundToNiceValue);
+    }
+
     return { yAxis, axisUnitByIndex };
+  }
+
+  /**
+   * Gives both y axes the same share below zero, so their zero lines match,
+   * while each axis still fits its own data (no symmetric range needed).
+   */
+  private _alignAxisZero(
+    yAxis: YAxisOption[],
+    configs: Array<EnergyCustomGraphAxisConfig | undefined>,
+    getDataRange: (axisIndex: number) => { min: number; max: number } | undefined,
+    roundToNiceValue: (value: number) => number
+  ): void {
+    const extents = yAxis.map((axis, index) => {
+      const config = configs[index];
+      if (config?.logarithmic_scale) {
+        return undefined;
+      }
+      const range = getDataRange(index);
+      const lo = Math.min(
+        config?.min ?? range?.min ?? 0,
+        range?.min ?? 0,
+        0
+      );
+      const hi = Math.max(config?.max ?? range?.max ?? 0, range?.max ?? 0, 0);
+      const negative = -lo;
+      const positive = hi;
+      if (negative + positive <= 0) {
+        return undefined;
+      }
+      return { negative, positive };
+    });
+
+    const valid = extents.filter((item): item is { negative: number; positive: number } => !!item);
+    if (valid.length < 2) {
+      return;
+    }
+    // Share of the axis height below zero; the largest one wins.
+    const share = Math.max(
+      ...valid.map(({ negative, positive }) => negative / (negative + positive))
+    );
+
+    extents.forEach((extent, index) => {
+      if (!extent) {
+        return;
+      }
+      const axis = yAxis[index] as YAxisOption & { min?: unknown; max?: unknown; scale?: boolean };
+      if (share >= 1) {
+        axis.min = -roundToNiceValue(extent.negative);
+        axis.max = 0;
+      } else if (share <= 0) {
+        axis.min = 0;
+        axis.max = roundToNiceValue(extent.positive);
+      } else {
+        const total = Math.max(extent.negative / share, extent.positive / (1 - share));
+        const max = roundToNiceValue((1 - share) * total);
+        const span = max / (1 - share);
+        axis.max = max;
+        axis.min = -share * span;
+        // The derived minimum is rarely a round number; hide its label.
+        const labelAxis = axis as YAxisOption & { axisLabel?: Record<string, unknown> };
+        labelAxis.axisLabel = { ...(labelAxis.axisLabel ?? {}), showMinLabel: false };
+      }
+      axis.scale = false;
+    });
   }
 
   private _evaluateHeaderChip(
